@@ -16,42 +16,39 @@ export abstract class OBD2Connection extends EventEmitter {
   abstract isConnectionOpen(): boolean;
 
   protected validateResponse(response: string): void {
-    const cleanResponse = response.trim().toUpperCase();
+    const clean = response.trim().toUpperCase();
 
-    if (cleanResponse.includes('UNABLE TO CONNECT')) {
+    if (clean.includes('UNABLE TO CONNECT')) {
       throw new ConnectionError('Unable to connect to vehicle');
     }
-
-    if (cleanResponse.includes('NO DATA')) {
+    if (clean.includes('NO DATA')) {
       throw new ProtocolError('No data received from vehicle');
     }
-
-    if (cleanResponse.includes('BUS INIT')) {
+    if (clean.includes('BUS INIT')) {
       throw new ProtocolError('Bus initialization error');
     }
-
-    if (cleanResponse.includes('?')) {
+    // '?' sozinho = comando inválido; mas ignora se vier junto com dados reais
+    if (clean === '?') {
       throw new ProtocolError('Unknown command or invalid response');
     }
-
-    if (cleanResponse.includes('CAN ERROR')) {
+    if (clean.includes('CAN ERROR')) {
       throw new ProtocolError('CAN bus error');
     }
-
-    if (cleanResponse.includes('STOPPED')) {
+    if (clean.includes('STOPPED')) {
       throw new ProtocolError('Communication stopped');
     }
-
-    if (cleanResponse.includes('BUFFER FULL')) {
+    if (clean.includes('BUFFER FULL')) {
       throw new ProtocolError('ELM327 buffer full');
+    }
+    if (clean.includes('ERROR')) {
+      throw new ProtocolError(`ELM327 error: ${clean}`);
     }
   }
 
   protected cleanResponse(response: string): string {
-    // Remove common ELM327 artifacts and whitespace
     return response
-      .replace(/SEARCHING\.\.\./g, '')
-      .replace(/BUS INIT\.\.\./g, '')
+      .replace(/SEARCHING\.\.\./gi, '')
+      .replace(/BUS INIT\.\.\./gi, '')
       .replace(/\r/g, ' ')
       .replace(/\n/g, ' ')
       .replace(/>/g, '')
@@ -68,40 +65,49 @@ export abstract class OBD2Connection extends EventEmitter {
     }
 
     try {
-      // Reset adapter
+      // Reset — clones baratos podem demorar mais que 1s
+      // FIX: aumentado para 1500ms para garantir estabilidade
       await this.sendCommand('ATZ');
-      await this.delay(1000);
+      await this.delay(1500);
 
-      // Turn off echo
+      // Desliga echo — essencial para o parser funcionar corretamente
       await this.sendCommand('ATE0');
 
-      // Turn off line feeds
+      // Desliga line feeds
       await this.sendCommand('ATL0');
 
-      // Turn off spaces
+      // Desliga espaços nas respostas
       await this.sendCommand('ATS0');
 
-      // Set timeout
+      // Timeout do adaptador (~200ms por unidade de 4ms)
       await this.sendCommand('ATST32');
 
-      // Adaptive timing auto
+      // Adaptive timing automático
       await this.sendCommand('ATAT1');
 
-      // Get adapter version
+      // Versão do firmware (ex: "ELM327 v1.5")
       const version = await this.sendCommand('ATI');
 
-      // Get device description
-      const device = await this.sendCommand('AT@1');
+      // FIX: AT@1 NÃO É SUPORTADO pela maioria dos clones ELM327 baratos.
+      // Se enviado, retorna '?' e derruba o initialize inteiro.
+      // Colocado em try/catch com fallback seguro.
+      let device = 'Unknown';
+      try {
+        const rawDevice = await this.sendCommand('AT@1');
+        device = this.cleanResponse(rawDevice);
+      } catch (_) {
+        // Clone não suporta AT@1 — ignora silenciosamente
+      }
 
-      // Set protocol to automatic
+      // Auto-detect do protocolo CAN/ISO/etc
       await this.sendCommand('ATSP0');
 
-      // Get protocol
+      // Lê o protocolo detectado (ex: "AUTO, ISO 15765-4 (CAN 11/500)")
       const protocol = await this.sendCommand('ATDP');
 
       return {
         version: this.cleanResponse(version),
-        device: this.cleanResponse(device),
+        device,
         protocol: this.cleanResponse(protocol),
       };
     } catch (error) {

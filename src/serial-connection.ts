@@ -2,19 +2,20 @@ import { SerialPort } from 'serialport';
 import { OBD2Connection } from './connection';
 import { ConnectionConfig, ConnectionError, TimeoutError } from './types';
 
+interface QueueEntry {
+  resolve: (value: string) => void;
+  reject: (error: Error) => void;
+}
+
 export class SerialConnection extends OBD2Connection {
   private port?: SerialPort;
-  private responseQueue: Array<{
-    resolve: (value: string) => void;
-    reject: (error: Error) => void;
-  }> = [];
+  private responseQueue: QueueEntry[] = [];
   private buffer = '';
 
   constructor(config: ConnectionConfig) {
     super(config);
-
     if (!config.port) {
-      throw new Error('Serial port is required for serial connection');
+      throw new Error('Serial port path é obrigatório para conexão serial');
     }
   }
 
@@ -28,7 +29,7 @@ export class SerialConnection extends OBD2Connection {
 
       this.port.open((error) => {
         if (error) {
-          reject(new ConnectionError(`Failed to open serial port: ${error.message}`));
+          reject(new ConnectionError(`Falha ao abrir porta serial: ${error.message}`));
           return;
         }
 
@@ -42,6 +43,7 @@ export class SerialConnection extends OBD2Connection {
 
   async disconnect(): Promise<void> {
     return new Promise((resolve) => {
+      this._flushQueueWithError(new ConnectionError('Desconectado'));
       if (this.port && this.port.isOpen) {
         this.port.close(() => {
           this.isConnected = false;
@@ -57,13 +59,14 @@ export class SerialConnection extends OBD2Connection {
 
   async sendCommand(command: string): Promise<string> {
     if (!this.port) {
-      throw new ConnectionError('Not connected to serial port');
+      throw new ConnectionError('Não conectado à porta serial');
     }
 
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        this.responseQueue.shift();
-        reject(new TimeoutError(`Command timeout: ${command}`));
+        const idx = this.responseQueue.findIndex((e) => e.reject === reject);
+        if (idx !== -1) this.responseQueue.splice(idx, 1);
+        reject(new TimeoutError(`Timeout no comando: ${command}`));
       }, this.timeout);
 
       this.responseQueue.push({
@@ -72,7 +75,7 @@ export class SerialConnection extends OBD2Connection {
           try {
             this.validateResponse(response);
             resolve(this.cleanResponse(response));
-          } catch (error) {
+          } catch (error: any) {
             reject(error);
           }
         },
@@ -85,8 +88,9 @@ export class SerialConnection extends OBD2Connection {
       this.port!.write(command + '\r', (error) => {
         if (error) {
           clearTimeout(timeoutId);
-          this.responseQueue.pop();
-          reject(new ConnectionError(`Failed to send command: ${error.message}`));
+          const idx = this.responseQueue.findIndex((e) => e.reject === reject);
+          if (idx !== -1) this.responseQueue.splice(idx, 1);
+          reject(new ConnectionError(`Falha ao enviar comando: ${error.message}`));
         }
       });
     });
@@ -102,47 +106,41 @@ export class SerialConnection extends OBD2Connection {
     this.port.on('data', (data: Buffer) => {
       this.buffer += data.toString();
 
-      if (this.buffer.includes('>')) {
-        const response = this.buffer.replace('>', '').trim();
-        this.buffer = '';
+      let idx: number;
+      while ((idx = this.buffer.indexOf('>')) !== -1) {
+        const raw = this.buffer.slice(0, idx).trim();
+        this.buffer = this.buffer.slice(idx + 1);
 
-        if (this.responseQueue.length > 0) {
-          const { resolve } = this.responseQueue.shift()!;
-          resolve(response);
+        if (raw.length > 0 && this.responseQueue.length > 0) {
+          this.responseQueue.shift()!.resolve(raw);
         }
-
-        this.emit('data', response);
+        if (raw.length > 0) {
+          this.emit('data', raw);
+        }
       }
     });
 
     this.port.on('error', (error: any) => {
-      this.emit('error', new ConnectionError(`Serial port error: ${error.message}`));
-
-      // Reject any pending commands
-      while (this.responseQueue.length > 0) {
-        const { reject } = this.responseQueue.shift()!;
-        reject(new ConnectionError('Connection lost'));
-      }
+      this._flushQueueWithError(new ConnectionError(`Erro na porta serial: ${error.message}`));
+      this.emit('error', new ConnectionError(`Erro na porta serial: ${error.message}`));
     });
 
-    if (this.port) {
-      this.port.on('close', () => {
-        this.isConnected = false;
-        this.emit('disconnected');
+    this.port.on('close', () => {
+      this.isConnected = false;
+      this._flushQueueWithError(new ConnectionError('Porta serial fechada'));
+      this.emit('disconnected');
+    });
+  }
 
-        // Reject any pending commands
-        while (this.responseQueue.length > 0) {
-          const { reject } = this.responseQueue.shift()!;
-          reject(new ConnectionError('Connection closed'));
-        }
-      });
+  private _flushQueueWithError(err: Error): void {
+    while (this.responseQueue.length > 0) {
+      this.responseQueue.shift()!.reject(err);
     }
   }
 
   static async listPorts(): Promise<
     Array<{ path: string; manufacturer: string | undefined; serialNumber: string | undefined }>
   > {
-    const { SerialPort } = await import('serialport');
     const ports = await SerialPort.list();
     return ports.map((port) => ({
       path: port.path,

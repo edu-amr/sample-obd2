@@ -1,4 +1,3 @@
-// Core interfaces and types
 export interface OBD2Command {
   name: string;
   pid: string;
@@ -16,9 +15,9 @@ export interface OBD2Response {
 
 export interface ConnectionConfig {
   type: 'bluetooth' | 'serial' | 'wifi';
-  address?: string; // For Bluetooth
-  port?: string | number;    // For Serial and WiFi
-  host?: string;    // For WiFi
+  address?: string;
+  port?: string | number;
+  host?: string;
   baudRate?: number;
   timeout?: number;
 }
@@ -42,11 +41,14 @@ export enum OBD2Protocol {
   ISO_15765_4_CAN_D = '9',
   SAE_J1939_CAN = 'A',
   USER1_CAN = 'B',
-  USER2_CAN = 'C'
+  USER2_CAN = 'C',
 }
 
 export class OBD2Error extends Error {
-  constructor(message: string, public code?: string) {
+  constructor(
+    message: string,
+    public code?: string,
+  ) {
     super(message);
     this.name = 'OBD2Error';
   }
