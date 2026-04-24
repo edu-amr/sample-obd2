@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { ConnectionConfig, OBD2AdapterInfo, ConnectionError, TimeoutError, ProtocolError } from './types';
+import { ConnectionConfig, ConnectionError, OBD2AdapterInfo, ProtocolError } from './types';
 
 export abstract class OBD2Connection extends EventEmitter {
   protected isConnected = false;
@@ -17,35 +17,49 @@ export abstract class OBD2Connection extends EventEmitter {
 
   protected validateResponse(response: string): void {
     const cleanResponse = response.trim().toUpperCase();
-    
+
     if (cleanResponse.includes('UNABLE TO CONNECT')) {
       throw new ConnectionError('Unable to connect to vehicle');
     }
-    
+
     if (cleanResponse.includes('NO DATA')) {
       throw new ProtocolError('No data received from vehicle');
     }
-    
+
     if (cleanResponse.includes('BUS INIT')) {
       throw new ProtocolError('Bus initialization error');
     }
-    
+
     if (cleanResponse.includes('?')) {
       throw new ProtocolError('Unknown command or invalid response');
     }
-    
+
     if (cleanResponse.includes('CAN ERROR')) {
       throw new ProtocolError('CAN bus error');
+    }
+
+    if (cleanResponse.includes('STOPPED')) {
+      throw new ProtocolError('Communication stopped');
+    }
+
+    if (cleanResponse.includes('BUFFER FULL')) {
+      throw new ProtocolError('ELM327 buffer full');
     }
   }
 
   protected cleanResponse(response: string): string {
+    // Remove common ELM327 artifacts and whitespace
     return response
-      .replace(/\r/g, '')
-      .replace(/\n/g, '')
-      .replace(/\s/g, '')
+      .replace(/SEARCHING\.\.\./g, '')
+      .replace(/BUS INIT\.\.\./g, '')
+      .replace(/\r/g, ' ')
+      .replace(/\n/g, ' ')
       .replace(/>/g, '')
-      .toUpperCase();
+      .trim()
+      .toUpperCase()
+      .split(' ')
+      .filter((part) => part.length > 0)
+      .join('');
   }
 
   async initialize(): Promise<OBD2AdapterInfo> {
@@ -60,35 +74,35 @@ export abstract class OBD2Connection extends EventEmitter {
 
       // Turn off echo
       await this.sendCommand('ATE0');
-      
+
       // Turn off line feeds
       await this.sendCommand('ATL0');
-      
+
       // Turn off spaces
       await this.sendCommand('ATS0');
-      
+
       // Set timeout
       await this.sendCommand('ATST32');
-      
+
       // Adaptive timing auto
       await this.sendCommand('ATAT1');
-      
+
       // Get adapter version
       const version = await this.sendCommand('ATI');
-      
+
       // Get device description
       const device = await this.sendCommand('AT@1');
-      
+
       // Set protocol to automatic
       await this.sendCommand('ATSP0');
-      
+
       // Get protocol
       const protocol = await this.sendCommand('ATDP');
-      
+
       return {
         version: this.cleanResponse(version),
         device: this.cleanResponse(device),
-        protocol: this.cleanResponse(protocol)
+        protocol: this.cleanResponse(protocol),
       };
     } catch (error) {
       throw new ProtocolError(`Failed to initialize adapter: ${error}`);
@@ -96,7 +110,7 @@ export abstract class OBD2Connection extends EventEmitter {
   }
 
   protected delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   getConnectionStatus(): boolean {

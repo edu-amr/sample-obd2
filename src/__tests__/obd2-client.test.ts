@@ -1,12 +1,12 @@
-import { OBD2Client } from '../src/obd2-client';
-import { ConnectionConfig } from '../src/types';
+import { OBD2Client } from '../obd2-client';
+import { ConnectionConfig } from '../types';
 
 describe('OBD2Client', () => {
   let client: OBD2Client;
   const mockConfig: ConnectionConfig = {
     type: 'serial',
     port: '/dev/ttyUSB0',
-    baudRate: 38400
+    baudRate: 38400,
   };
 
   beforeEach(() => {
@@ -48,10 +48,13 @@ describe('OBD2Client', () => {
     it('should throw error for unknown command', async () => {
       // Mock connection
       (client as any).connection = {
-        getConnectionStatus: () => true
+        getConnectionStatus: () => true,
+        disconnect: async () => {},
       };
-      
-      await expect(client.query('UNKNOWN_COMMAND')).rejects.toThrow('Unknown command: UNKNOWN_COMMAND');
+
+      await expect(client.query('UNKNOWN_COMMAND')).rejects.toThrow(
+        'Unknown command: UNKNOWN_COMMAND',
+      );
     });
   });
 
@@ -59,20 +62,26 @@ describe('OBD2Client', () => {
     beforeEach(() => {
       // Mock connection and query method
       (client as any).connection = {
-        getConnectionStatus: () => true
+        getConnectionStatus: () => true,
+        disconnect: async () => {},
       };
-      
-      jest.spyOn(client, 'query').mockImplementation(async (command: string) => {
+
+      jest.spyOn(client, 'query').mockImplementation(async (command: any) => {
         const mockResponses: Record<string, any> = {
-          'ENGINE_RPM': { command: 'ENGINE_RPM', value: 2500, unit: 'rpm', timestamp: new Date() },
-          'VEHICLE_SPEED': { command: 'VEHICLE_SPEED', value: 60, unit: 'km/h', timestamp: new Date() },
-          'COOLANT_TEMP': { command: 'COOLANT_TEMP', value: 85, unit: '°C', timestamp: new Date() },
-          'ENGINE_LOAD': { command: 'ENGINE_LOAD', value: 45, unit: '%', timestamp: new Date() },
-          'FUEL_LEVEL': { command: 'FUEL_LEVEL', value: 75, unit: '%', timestamp: new Date() },
-          'THROTTLE_POS': { command: 'THROTTLE_POS', value: 25, unit: '%', timestamp: new Date() }
+          ENGINE_RPM: { command: 'ENGINE_RPM', value: 2500, unit: 'rpm', timestamp: new Date() },
+          VEHICLE_SPEED: {
+            command: 'VEHICLE_SPEED',
+            value: 60,
+            unit: 'km/h',
+            timestamp: new Date(),
+          },
+          COOLANT_TEMP: { command: 'COOLANT_TEMP', value: 85, unit: '°C', timestamp: new Date() },
+          ENGINE_LOAD: { command: 'ENGINE_LOAD', value: 45, unit: '%', timestamp: new Date() },
+          FUEL_LEVEL: { command: 'FUEL_LEVEL', value: 75, unit: '%', timestamp: new Date() },
+          THROTTLE_POS: { command: 'THROTTLE_POS', value: 25, unit: '%', timestamp: new Date() },
         };
-        
-        return mockResponses[command] || { command, value: 0, timestamp: new Date() };
+
+        return mockResponses[command as string] || { command, value: 0, timestamp: new Date() };
       });
     });
 

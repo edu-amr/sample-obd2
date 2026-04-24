@@ -1,16 +1,18 @@
 import { SerialPort } from 'serialport';
-import { ReadlineParser } from '@serialport/parser-readline';
 import { OBD2Connection } from './connection';
 import { ConnectionConfig, ConnectionError, TimeoutError } from './types';
 
 export class SerialConnection extends OBD2Connection {
   private port?: SerialPort;
-  private parser?: ReadlineParser;
-  private responseQueue: Array<{ resolve: (value: string) => void; reject: (error: Error) => void }> = [];
+  private responseQueue: Array<{
+    resolve: (value: string) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  private buffer = '';
 
   constructor(config: ConnectionConfig) {
     super(config);
-    
+
     if (!config.port) {
       throw new Error('Serial port is required for serial connection');
     }
@@ -21,10 +23,8 @@ export class SerialConnection extends OBD2Connection {
       this.port = new SerialPort({
         path: this.config.port as string,
         baudRate: this.config.baudRate || 38400,
-        autoOpen: false
+        autoOpen: false,
       });
-
-      this.parser = this.port.pipe(new ReadlineParser({ delimiter: '\r' }));
 
       this.port.open((error) => {
         if (error) {
@@ -56,12 +56,13 @@ export class SerialConnection extends OBD2Connection {
   }
 
   async sendCommand(command: string): Promise<string> {
-    if (!this.port || !this.parser) {
+    if (!this.port) {
       throw new ConnectionError('Not connected to serial port');
     }
 
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
+        this.responseQueue.shift();
         reject(new TimeoutError(`Command timeout: ${command}`));
       }, this.timeout);
 
@@ -78,7 +79,7 @@ export class SerialConnection extends OBD2Connection {
         reject: (error: Error) => {
           clearTimeout(timeoutId);
           reject(error);
-        }
+        },
       });
 
       this.port!.write(command + '\r', (error) => {
@@ -96,22 +97,27 @@ export class SerialConnection extends OBD2Connection {
   }
 
   private setupEventHandlers(): void {
-    if (!this.parser) return;
+    if (!this.port) return;
 
-    this.parser.on('data', (data: string) => {
-      const response = data.toString().trim();
-      
-      if (this.responseQueue.length > 0) {
-        const { resolve } = this.responseQueue.shift()!;
-        resolve(response);
+    this.port.on('data', (data: Buffer) => {
+      this.buffer += data.toString();
+
+      if (this.buffer.includes('>')) {
+        const response = this.buffer.replace('>', '').trim();
+        this.buffer = '';
+
+        if (this.responseQueue.length > 0) {
+          const { resolve } = this.responseQueue.shift()!;
+          resolve(response);
+        }
+
+        this.emit('data', response);
       }
-      
-      this.emit('data', response);
     });
 
-    this.parser.on('error', (error) => {
+    this.port.on('error', (error: any) => {
       this.emit('error', new ConnectionError(`Serial port error: ${error.message}`));
-      
+
       // Reject any pending commands
       while (this.responseQueue.length > 0) {
         const { reject } = this.responseQueue.shift()!;
@@ -123,7 +129,7 @@ export class SerialConnection extends OBD2Connection {
       this.port.on('close', () => {
         this.isConnected = false;
         this.emit('disconnected');
-        
+
         // Reject any pending commands
         while (this.responseQueue.length > 0) {
           const { reject } = this.responseQueue.shift()!;
@@ -133,13 +139,15 @@ export class SerialConnection extends OBD2Connection {
     }
   }
 
-  static async listPorts(): Promise<Array<{ path: string; manufacturer: string | undefined; serialNumber: string | undefined }>> {
+  static async listPorts(): Promise<
+    Array<{ path: string; manufacturer: string | undefined; serialNumber: string | undefined }>
+  > {
     const { SerialPort } = await import('serialport');
     const ports = await SerialPort.list();
-    return ports.map(port => ({
+    return ports.map((port) => ({
       path: port.path,
       manufacturer: port.manufacturer ?? undefined,
-      serialNumber: port.serialNumber ?? undefined
+      serialNumber: port.serialNumber ?? undefined,
     }));
   }
 }
